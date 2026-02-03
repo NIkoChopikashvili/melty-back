@@ -1,10 +1,20 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const { createCheckoutUrl, checkOrderStatus, handleCallback } = require('../controllers/paymentController');
+const {
+  initiate3DSecure,
+  complete3DSecure,
+  checkOrderStatus,
+  handleCallback,
+} = require("../controllers/paymentController");
 
-router.post('/checkout-url', createCheckoutUrl);
-router.post('/status', checkOrderStatus);
-router.post('/callback', handleCallback);
+// 3D Secure flow (PCI DSS compliant - card data collected on your site)
+router.post("/3dsecure/step1", initiate3DSecure);
+router.post("/3dsecure/step2", complete3DSecure);
+
+// Order status check
+router.post("/status", checkOrderStatus);
+
+// Flitt callback handler
+router.post("/callback", handleCallback);
 
 module.exports = router;
-
