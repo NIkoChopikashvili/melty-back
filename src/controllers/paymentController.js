@@ -28,11 +28,6 @@ const initiate3DSecure = async (req, res) => {
       .json({ message: "Flitt merchant configuration missing" });
   }
 
-  // Validate required fields
-  if (!userId) {
-    return res.status(400).json({ message: "userId is required" });
-  }
-
   if (!card_number || !cvv2 || !expiry_date) {
     return res.status(400).json({
       message: "Card details are required (card_number, cvv2, expiry_date)",
@@ -56,7 +51,8 @@ const initiate3DSecure = async (req, res) => {
     order_desc: order_desc || "Payment",
     order_id: generatedOrderId,
     response_url: "http://myshop/thank_you_page",
-    server_callback_url,
+    server_callback_url:
+      "https://4e7cbeab441a.ngrok-free.app/api/payment/callback",
     merchant_data: userId, // Pass userId to receive it back in callback
   };
 
@@ -225,6 +221,126 @@ const complete3DSecure = async (req, res) => {
   }
 };
 
+// Frontend URL for redirects
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+
+// @desc    Handle ACS return (TermUrl) - Bank redirects here after 3DS authentication
+// @route   POST /api/payment/termurl
+// @access  Public (Bank ACS redirects here)
+const handleTermUrl = async (req, res) => {
+  // ACS returns PaRes and MD (uppercase) via POST
+  const { PaRes, MD } = req.body;
+  // order_id should be passed as query parameter in TermUrl
+  const { order_id } = req.query;
+
+  console.log("Received ACS callback:", {
+    PaRes: PaRes?.substring(0, 50) + "...",
+    MD,
+    order_id,
+  });
+
+  const merchantId = process.env.FLITT_MERCHANT_ID || 1549901;
+  const secretKey = process.env.FLITT_SECRET_KEY || "test";
+
+  if (!PaRes || !MD) {
+    return res.redirect(
+      `${FRONTEND_URL}/payment/callback?status=failed&error=missing_3ds_data`
+    );
+  }
+
+  if (!order_id) {
+    return res.redirect(
+      `${FRONTEND_URL}/payment/callback?status=failed&error=missing_order_id`
+    );
+  }
+
+  // Call Flitt 3dsecure_step2 to complete the payment
+  const requestParams = {
+    md: MD,
+    merchant_id: merchantId,
+    order_id: order_id,
+    pares: PaRes,
+  };
+
+  const signature = generateSignature(requestParams, secretKey);
+  const payload = {
+    request: {
+      ...requestParams,
+      signature,
+      merchant_id: merchantId,
+    },
+  };
+
+  try {
+    const response = await axios.post(
+      "https://pay.flitt.com/api/3dsecure_step2",
+      payload
+    );
+
+    const data = response.data?.response || response.data;
+
+    console.log("Step2 response:", JSON.stringify(data, null, 2));
+
+    // Check for error response
+    if (data.response_status === "failure") {
+      const errorMsg = encodeURIComponent(
+        data.error_message || "Unknown error"
+      );
+      return res.redirect(
+        `${FRONTEND_URL}/payment/callback?status=failed&error=${errorMsg}&code=${
+          data.error_code || ""
+        }`
+      );
+    }
+
+    // Payment successful
+    if (
+      data.response_status === "success" &&
+      data.order_status === "approved"
+    ) {
+      // Update user balance if merchant_data (userId) is present
+      const userId = data.merchant_data;
+      if (userId) {
+        try {
+          const amountInGel = Number(data.amount) / 100;
+          let balance = await Balance.findOne({ userId });
+
+          if (!balance) {
+            balance = await Balance.create({ userId, amount: amountInGel });
+          } else {
+            balance.amount += amountInGel;
+            await balance.save();
+          }
+          console.log(`Updated balance for user ${userId} by ${amountInGel}`);
+        } catch (err) {
+          console.error(`Failed to update balance for user ${userId}:`, err);
+        }
+      }
+
+      const amount = Number(data.amount) / 100;
+      return res.redirect(
+        `${FRONTEND_URL}/payment/callback?status=success&order_id=${data.order_id}&amount=${amount}&currency=${data.currency}`
+      );
+    }
+
+    // Payment not approved
+    return res.redirect(
+      `${FRONTEND_URL}/payment/callback?status=failed&error=not_approved&order_status=${
+        data.order_status || "unknown"
+      }`
+    );
+  } catch (error) {
+    console.error(
+      "Flitt 3DS Step2 Error:",
+      error.response?.data || error.message
+    );
+    const errorMsg = encodeURIComponent(error.message || "Unknown error");
+    return res.redirect(
+      `${FRONTEND_URL}/payment/callback?status=failed&error=${errorMsg}`
+    );
+  }
+};
+
 // @desc    Check order status
 // @route   POST /api/payment/status
 // @access  Public
@@ -328,6 +444,7 @@ const handleCallback = async (req, res) => {
 module.exports = {
   initiate3DSecure,
   complete3DSecure,
+  handleTermUrl,
   checkOrderStatus,
   handleCallback,
 };

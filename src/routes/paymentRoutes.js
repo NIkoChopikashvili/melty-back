@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   initiate3DSecure,
   complete3DSecure,
+  handleTermUrl,
   checkOrderStatus,
   handleCallback,
 } = require("../controllers/paymentController");
@@ -11,10 +12,13 @@ const {
 router.post("/3dsecure/step1", initiate3DSecure);
 router.post("/3dsecure/step2", complete3DSecure);
 
+// TermUrl - Bank ACS redirects here after 3DS authentication
+router.post("/termurl", handleTermUrl);
+
 // Order status check
 router.post("/status", checkOrderStatus);
 
-// Flitt callback handler
+// Flitt server callback handler
 router.post("/callback", handleCallback);
 
 module.exports = router;
